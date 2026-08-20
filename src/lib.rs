@@ -5,11 +5,13 @@
 //! encoder. Packet layouts and cryptographic machinery remain private so the
 //! integration API can evolve independently of protocol internals.
 
+mod codec;
 mod constants;
 mod error;
 mod frame;
 mod ntp;
 mod sync_source;
 
+pub use codec::{AudioCodec, CastMode, Framerate, Resolution, StreamType, VideoCodec};
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
