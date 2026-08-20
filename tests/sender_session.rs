@@ -210,6 +210,46 @@ async fn start_session_and_send_frame() {
 }
 
 #[tokio::test]
+async fn audio_and_video_both_stream() {
+    let offer = build_test_offer();
+    let answer = build_test_answer();
+    let (transport, control) = mock_transport();
+
+    let (session, _events) =
+        SenderSession::start(&offer, &answer, IpAddr::V4(Ipv4Addr::LOCALHOST), transport)
+            .await
+            .unwrap();
+
+    let audio = session.audio().unwrap();
+    let video = session.video().unwrap();
+
+    audio
+        .send(encoded_frame(
+            FrameDependency::KeyFrame,
+            Bytes::from_static(b"opus audio frame"),
+            Duration::ZERO,
+        ))
+        .await
+        .unwrap();
+
+    video
+        .send(encoded_frame(
+            FrameDependency::KeyFrame,
+            Bytes::from_static(b"h264 video frame"),
+            Duration::ZERO,
+        ))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let sent = control.take_sent();
+    assert!(sent.len() >= 2);
+
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn reject_invalid_answer() {
     let offer = build_test_offer();
     let bad_answer: Answer = serde_json::from_value(serde_json::json!({
