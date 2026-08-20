@@ -7,6 +7,7 @@
 
 mod codec;
 mod constants;
+mod crypto;
 mod error;
 mod frame;
 mod ntp;
