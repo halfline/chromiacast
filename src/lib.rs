@@ -7,5 +7,7 @@
 
 mod constants;
 mod error;
+mod frame;
 
 pub use error::{EnqueueError, Error, SenderError};
+pub use frame::{EncodedFrame, FrameDependency, FrameId};
