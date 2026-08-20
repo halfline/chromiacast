@@ -5,6 +5,7 @@
 //! encoder. Packet layouts and cryptographic machinery remain private so the
 //! integration API can evolve independently of protocol internals.
 
+mod answer;
 mod codec;
 mod constants;
 mod crypto;
@@ -17,6 +18,7 @@ mod rtp;
 mod sync_source;
 mod transport;
 
+pub use answer::{Answer, AudioConstraints, Constraints, DisplayDescription, VideoConstraints};
 pub use codec::{AudioCodec, CastMode, Framerate, Resolution, StreamType, VideoCodec};
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
