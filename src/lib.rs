@@ -21,6 +21,10 @@ mod transport;
 
 pub use answer::{Answer, AudioConstraints, Constraints, DisplayDescription, VideoConstraints};
 pub use codec::{AudioCodec, CastMode, Framerate, Resolution, StreamType, VideoCodec};
+pub use control::{
+    AppAvailability, CastApp, CastConnection, ControlCloseReason, ControlEvent, DeviceIdentity,
+    ReceiverStatus, APP_MIRRORING, CAST_PORT,
+};
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
 pub use offer::{AudioStreamConfig, Offer, OfferBuilder, VideoStreamConfig};
