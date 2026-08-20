@@ -29,4 +29,5 @@ pub use control::{
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
 pub use offer::{AudioStreamConfig, Offer, OfferBuilder, VideoStreamConfig};
+pub use sender::{SenderEvent, SenderSession, SessionStatistics, StreamHandle, StreamStatistics};
 pub use transport::{Transport, UdpTransport};
