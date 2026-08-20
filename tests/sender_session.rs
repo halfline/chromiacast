@@ -125,11 +125,45 @@ fn encoded_frame(
         .with_duration(Duration::from_millis(10))
 }
 
+fn build_cast_feedback(
+    receiver_sync_source: u32,
+    sender_sync_source: u32,
+    checkpoint: u8,
+    playout_delay: u16,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.push(0x80 | 15); // V=2, subtype=15 (feedback)
+    buf.push(206); // PT=PAYLOAD_SPECIFIC
+    buf.extend_from_slice(&4u16.to_be_bytes()); // length = 4 words (16 bytes)
+    buf.extend_from_slice(&receiver_sync_source.to_be_bytes());
+    buf.extend_from_slice(&sender_sync_source.to_be_bytes());
+    buf.extend_from_slice(&0x4341_5354u32.to_be_bytes()); // "CAST"
+    buf.push(checkpoint);
+    buf.push(0); // 0 loss fields
+    buf.extend_from_slice(&playout_delay.to_be_bytes());
+    buf
+}
+
+fn build_cast_feedback_with_ack_bitvector(
+    receiver_sync_source: u32,
+    sender_sync_source: u32,
+    checkpoint: u8,
+    ack_bits: [u8; 2],
+) -> Vec<u8> {
+    let mut buf = build_cast_feedback(receiver_sync_source, sender_sync_source, checkpoint, 400);
+    buf[2..4].copy_from_slice(&6u16.to_be_bytes());
+    buf.extend_from_slice(&0x4353_5432u32.to_be_bytes()); // "CST2"
+    buf.push(1); // feedback count
+    buf.push(ack_bits.len() as u8);
+    buf.extend_from_slice(&ack_bits);
+    buf
+}
+
 fn build_picture_loss(receiver_sync_source: u32, sender_sync_source: u32) -> Vec<u8> {
     let mut buf = Vec::new();
-    buf.push(0x80 | 1);
-    buf.push(206);
-    buf.extend_from_slice(&2u16.to_be_bytes());
+    buf.push(0x80 | 1); // V=2, subtype=picture_loss
+    buf.push(206); // PT=PAYLOAD_SPECIFIC
+    buf.extend_from_slice(&2u16.to_be_bytes()); // length = 2 words
     buf.extend_from_slice(&receiver_sync_source.to_be_bytes());
     buf.extend_from_slice(&sender_sync_source.to_be_bytes());
     buf
@@ -253,6 +287,7 @@ async fn audio_and_video_both_stream() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
+    // Both streams should have produced packets
     let sent = control.take_sent();
     assert!(sent.len() >= 2);
 
@@ -270,12 +305,14 @@ async fn sender_report_sent_periodically() {
             .await
             .unwrap();
 
+    // Wait longer than RTCP_REPORT_INTERVAL (500ms)
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     let sent = control.take_sent();
+    // Should have at least one Sender Report (byte[1] == 200)
     let sender_reports: Vec<_> = sent
         .iter()
-        .filter(|packet| packet.len() >= 2 && packet[1] == 200)
+        .filter(|p| p.len() >= 2 && p[1] == 200)
         .collect();
     assert!(
         !sender_reports.is_empty(),
@@ -300,6 +337,7 @@ async fn picture_loss_triggers_key_frame_request() {
     let video = session.video().unwrap();
     let video_sync_source = offer_sync_source(&offer, 1);
 
+    // Send a frame first so the stream is active
     video
         .send(encoded_frame(
             FrameDependency::KeyFrame,
@@ -310,10 +348,12 @@ async fn picture_loss_triggers_key_frame_request() {
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    control
-        .inject(build_picture_loss(30000, video_sync_source))
-        .await;
 
+    // Inject picture loss
+    let picture_loss = build_picture_loss(30000, video_sync_source);
+    control.inject(picture_loss).await;
+
+    // Should get PictureLoss + NeedsKeyFrame events
     let mut got_picture_loss = false;
     let mut got_needs_key = false;
 
@@ -336,6 +376,119 @@ async fn picture_loss_triggers_key_frame_request() {
 
     assert!(got_picture_loss, "should have received PictureLoss");
     assert!(got_needs_key, "should have received NeedsKeyFrame");
+
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn rtcp_feedback_acks_frames() {
+    let offer = build_test_offer();
+    let answer = build_test_answer();
+    let (transport, control) = mock_transport();
+
+    let (session, mut events) =
+        SenderSession::start(&offer, &answer, IpAddr::V4(Ipv4Addr::LOCALHOST), transport)
+            .await
+            .unwrap();
+
+    let video = session.video().unwrap();
+    let video_sync_source = offer_sync_source(&offer, 1);
+
+    // Send a frame
+    let frame_id = video
+        .send(encoded_frame(
+            FrameDependency::KeyFrame,
+            Bytes::from_static(b"keyframe"),
+            Duration::ZERO,
+        ))
+        .await
+        .unwrap();
+
+    // Wait for burst to send packets
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Inject RTCP Cast Feedback acknowledging frame 0
+    let feedback = build_cast_feedback(30000, video_sync_source, 0, 400);
+    control.inject(feedback).await;
+
+    // Should receive a FrameAcked event
+    let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    match event {
+        SenderEvent::FrameAcked {
+            stream,
+            frame_id: acked_id,
+        } => {
+            assert_eq!(stream, StreamType::Video);
+            assert_eq!(acked_id, frame_id);
+        }
+        other => panic!("expected FrameAcked, got {:?}", other),
+    }
+
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn rtcp_ack_bitvector_retires_frames_after_a_gap() {
+    let offer = build_test_offer();
+    let answer = build_test_answer();
+    let (transport, control) = mock_transport();
+    let (session, mut events) =
+        SenderSession::start(&offer, &answer, IpAddr::V4(Ipv4Addr::LOCALHOST), transport)
+            .await
+            .unwrap();
+    let video = session.video().unwrap();
+    let video_sync_source = offer_sync_source(&offer, 1);
+
+    for index in 0..4u64 {
+        video
+            .send(encoded_frame(
+                if index == 0 {
+                    FrameDependency::KeyFrame
+                } else {
+                    FrameDependency::Delta
+                },
+                Bytes::from_static(b"frame"),
+                Duration::from_millis(index * 10),
+            ))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    control
+        .inject(build_cast_feedback_with_ack_bitvector(
+            30000,
+            video_sync_source,
+            0,
+            [0b0000_0011, 0],
+        ))
+        .await;
+
+    let acknowledged = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut acknowledged = Vec::new();
+        while acknowledged.len() < 3 {
+            if let Some(SenderEvent::FrameAcked { frame_id, .. }) = events.recv().await {
+                acknowledged.push(frame_id);
+            }
+        }
+        acknowledged
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        acknowledged,
+        vec![FrameId::first(), FrameId::first() + 2, FrameId::first() + 3]
+    );
+    let statistics = session.statistics().await.unwrap().video.unwrap();
+    assert_eq!(statistics.in_flight_frames, 1);
+    assert_eq!(statistics.frames_acked, 3);
+    assert_eq!(statistics.last_ack_feedback_count, Some(1));
+    assert_eq!(statistics.last_ack_bitvector_bytes, Some(2));
 
     session.shutdown().await.unwrap();
 }
