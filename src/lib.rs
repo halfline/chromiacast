@@ -10,6 +10,8 @@ mod codec;
 mod constants;
 mod control;
 mod crypto;
+#[cfg(feature = "discovery")]
+mod discovery;
 mod error;
 mod frame;
 mod ntp;
@@ -26,6 +28,8 @@ pub use control::{
     AppAvailability, CastApp, CastConnection, ControlCloseReason, ControlEvent, DeviceIdentity,
     ReceiverStatus, APP_MIRRORING, CAST_PORT,
 };
+#[cfg(feature = "discovery")]
+pub use discovery::{discover, CastCapabilities, CastDevice, CastEndpoint};
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
 pub use offer::{AudioStreamConfig, Offer, OfferBuilder, VideoStreamConfig};
