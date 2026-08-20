@@ -210,6 +210,35 @@ async fn start_session_and_send_frame() {
 }
 
 #[tokio::test]
+async fn offer_json_roundtrip() {
+    let offer = build_test_offer();
+    let json = serde_json::to_value(&offer).unwrap();
+
+    // Verify the JSON has the expected Cast protocol structure
+    assert_eq!(json["castMode"], "mirroring");
+    let streams = json["supportedStreams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2);
+
+    // Audio stream
+    let audio = &streams[0];
+    assert_eq!(audio["type"], "audio_source");
+    assert_eq!(audio["codecName"], "opus");
+    assert_eq!(audio["rtpProfile"], "cast");
+    assert_eq!(audio["channels"], 2);
+    assert_eq!(audio["timeBase"], "1/48000");
+    assert!(audio["ssrc"].as_u64().unwrap() <= 50_000);
+    assert_eq!(audio["aesKey"].as_str().unwrap().len(), 32);
+    assert_eq!(audio["aesIvMask"].as_str().unwrap().len(), 32);
+
+    // Video stream
+    let video = &streams[1];
+    assert_eq!(video["type"], "video_source");
+    assert_eq!(video["codecName"], "h264");
+    assert_eq!(video["timeBase"], "1/90000");
+    assert!(video["ssrc"].as_u64().unwrap() > 50_000);
+    assert!(!video["resolutions"].as_array().unwrap().is_empty());
+}
+#[tokio::test]
 async fn multiple_frames_sequential() {
     let offer = build_test_offer();
     let answer = build_test_answer();
