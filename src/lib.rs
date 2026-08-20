@@ -5,6 +5,7 @@
 //! encoder. Packet layouts and cryptographic machinery remain private so the
 //! integration API can evolve independently of protocol internals.
 
+mod constants;
 mod error;
 
 pub use error::{EnqueueError, Error, SenderError};
