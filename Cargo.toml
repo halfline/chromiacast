@@ -35,4 +35,8 @@ tracing = "0.1"
 x509-parser = { version = "=0.16.0", features = ["verify"] }
 
 [dev-dependencies]
+openh264 = "0.6"
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
+[[test]]
+name = "pixel_verify"
+required-features = ["dangerous-unverified"]
