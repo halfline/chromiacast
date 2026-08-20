@@ -125,6 +125,16 @@ fn encoded_frame(
         .with_duration(Duration::from_millis(10))
 }
 
+fn build_picture_loss(receiver_sync_source: u32, sender_sync_source: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.push(0x80 | 1);
+    buf.push(206);
+    buf.extend_from_slice(&2u16.to_be_bytes());
+    buf.extend_from_slice(&receiver_sync_source.to_be_bytes());
+    buf.extend_from_slice(&sender_sync_source.to_be_bytes());
+    buf
+}
+
 fn build_cast_feedback_with_nack(
     receiver_sync_source: u32,
     sender_sync_source: u32,
@@ -272,6 +282,60 @@ async fn sender_report_sent_periodically() {
         "expected at least one Sender Report, got {} packets total",
         sent.len()
     );
+
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn picture_loss_triggers_key_frame_request() {
+    let offer = build_test_offer();
+    let answer = build_test_answer();
+    let (transport, control) = mock_transport();
+
+    let (session, mut events) =
+        SenderSession::start(&offer, &answer, IpAddr::V4(Ipv4Addr::LOCALHOST), transport)
+            .await
+            .unwrap();
+
+    let video = session.video().unwrap();
+    let video_sync_source = offer_sync_source(&offer, 1);
+
+    video
+        .send(encoded_frame(
+            FrameDependency::KeyFrame,
+            Bytes::from_static(b"keyframe"),
+            Duration::ZERO,
+        ))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    control
+        .inject(build_picture_loss(30000, video_sync_source))
+        .await;
+
+    let mut got_picture_loss = false;
+    let mut got_needs_key = false;
+
+    for _ in 0..10 {
+        match tokio::time::timeout(Duration::from_secs(1), events.recv()).await {
+            Ok(Some(SenderEvent::PictureLoss { stream })) => {
+                assert_eq!(stream, StreamType::Video);
+                got_picture_loss = true;
+            }
+            Ok(Some(SenderEvent::NeedsKeyFrame { stream })) => {
+                assert_eq!(stream, StreamType::Video);
+                got_needs_key = true;
+            }
+            _ => break,
+        }
+        if got_picture_loss && got_needs_key {
+            break;
+        }
+    }
+
+    assert!(got_picture_loss, "should have received PictureLoss");
+    assert!(got_needs_key, "should have received NeedsKeyFrame");
 
     session.shutdown().await.unwrap();
 }
