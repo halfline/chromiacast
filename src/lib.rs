@@ -11,6 +11,7 @@ mod crypto;
 mod error;
 mod frame;
 mod ntp;
+mod rtp;
 mod sync_source;
 mod transport;
 
