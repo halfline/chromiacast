@@ -29,7 +29,7 @@ serde_json = "1"
 thiserror = "2"
 # Newer `time` releases require a compiler newer than the crate's declared MSRV.
 time = "=0.3.36"
-tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "io-util"] }
+tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "io-util", "signal"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tracing = "0.1"
 x509-parser = { version = "=0.16.0", features = ["verify"] }
@@ -37,6 +37,12 @@ x509-parser = { version = "=0.16.0", features = ["verify"] }
 [dev-dependencies]
 openh264 = "0.6"
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "red_screen"
+required-features = ["discovery"]
+
 [[test]]
 name = "pixel_verify"
 required-features = ["dangerous-unverified"]
