@@ -210,6 +210,28 @@ async fn start_session_and_send_frame() {
 }
 
 #[tokio::test]
+async fn reject_invalid_answer() {
+    let offer = build_test_offer();
+    let bad_answer: Answer = serde_json::from_value(serde_json::json!({
+        "udpPort": 0,
+        "sendIndexes": [],
+        "ssrcs": []
+    }))
+    .unwrap();
+
+    let (transport, _control) = mock_transport();
+
+    let result = SenderSession::start(
+        &offer,
+        &bad_answer,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        transport,
+    )
+    .await;
+
+    assert!(result.is_err());
+}
+#[tokio::test]
 async fn offer_json_roundtrip() {
     let offer = build_test_offer();
     let json = serde_json::to_value(&offer).unwrap();
