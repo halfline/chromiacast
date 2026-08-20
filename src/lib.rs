@@ -8,6 +8,7 @@
 mod answer;
 mod codec;
 mod constants;
+mod control;
 mod crypto;
 mod error;
 mod frame;
