@@ -9,6 +9,7 @@ mod constants;
 mod error;
 mod frame;
 mod ntp;
+mod sync_source;
 
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
