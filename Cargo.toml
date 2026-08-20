@@ -12,4 +12,5 @@ categories = ["multimedia", "network-programming"]
 
 [dependencies]
 bytes = "1"
+rand = "0.8"
 thiserror = "2"
