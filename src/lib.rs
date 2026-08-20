@@ -11,7 +11,9 @@ mod error;
 mod frame;
 mod ntp;
 mod sync_source;
+mod transport;
 
 pub use codec::{AudioCodec, CastMode, Framerate, Resolution, StreamType, VideoCodec};
 pub use error::{EnqueueError, Error, SenderError};
 pub use frame::{EncodedFrame, FrameDependency, FrameId};
+pub use transport::{Transport, UdpTransport};
