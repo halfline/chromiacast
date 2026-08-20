@@ -129,3 +129,40 @@ async fn start_session_and_send_frame() {
 
     session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn multiple_frames_sequential() {
+    let offer = build_test_offer();
+    let answer = build_test_answer();
+    let (transport, control) = mock_transport();
+
+    let (session, _events) =
+        SenderSession::start(&offer, &answer, IpAddr::V4(Ipv4Addr::LOCALHOST), transport)
+            .await
+            .unwrap();
+
+    let video = session.video().unwrap();
+
+    for i in 0..10 {
+        let dependency = if i == 0 {
+            FrameDependency::KeyFrame
+        } else {
+            FrameDependency::Delta
+        };
+        let id = video
+            .send(encoded_frame(
+                dependency,
+                Bytes::from(vec![i as u8; 1000]),
+                Duration::from_millis(i as u64 * 10),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(id, FrameId::first() + i);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(control.sent_count() >= 10);
+
+    session.shutdown().await.unwrap();
+}
