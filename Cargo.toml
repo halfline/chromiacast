@@ -60,6 +60,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 name = "red_screen"
 required-features = ["discovery"]
 
+[[example]]
+name = "android_tv_control"
+required-features = ["android-tv"]
+
 [[test]]
 name = "pixel_verify"
 required-features = ["dangerous-unverified"]
