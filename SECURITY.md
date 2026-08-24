@@ -20,6 +20,12 @@ users may discover, connect to, or cast to a device. Applications remain
 responsible for local-user policy, consent, and protecting encoded media
 before it reaches this crate.
 
+`CastConnection::get_setup_device_info` is deliberately outside that
+authentication boundary. It queries a self-signed HTTPS service at the same
+selected receiver address and returns bounded presentation metadata. Callers
+must not treat those manufacturer, model, product, or SSDP strings as a
+credential or authorization decision.
+
 ## Supported versions
 
 Security fixes are applied to the current development branch. No stable
