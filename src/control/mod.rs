@@ -8,10 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::CryptoProvider;
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use rustls::pki_types::ServerName;
+use rustls::ClientConfig;
 use serde_json::Value;
 use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -23,6 +21,7 @@ use tokio_rustls::TlsConnector;
 use crate::answer::Answer;
 use crate::error::Error;
 use crate::offer::Offer;
+use crate::tls::SelfSignedCertificateVerifier;
 
 use self::auth::AuthChallenge;
 pub use self::auth::DeviceIdentity;
@@ -1286,69 +1285,6 @@ fn connection_error(detail: impl Into<String>) -> Error {
 
 fn control_closed_error() -> Error {
     connection_error("control channel closed")
-}
-
-/// Cast receivers use short-lived, self-signed TLS certificates. Certificate
-/// trust is established by the Cast device-auth exchange, but the TLS
-/// CertificateVerify signature must still be cryptographically checked.
-#[derive(Debug)]
-struct SelfSignedCertificateVerifier {
-    provider: Arc<CryptoProvider>,
-}
-
-impl SelfSignedCertificateVerifier {
-    fn new() -> Self {
-        Self {
-            provider: Arc::new(rustls::crypto::ring::default_provider()),
-        }
-    }
-}
-
-impl ServerCertVerifier for SelfSignedCertificateVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            certificate,
-            signature,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            certificate,
-            signature,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
 }
 
 #[cfg(test)]
