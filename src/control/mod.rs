@@ -1,4 +1,5 @@
 mod auth;
+mod device_info;
 pub(crate) mod framing;
 pub(crate) mod proto;
 
