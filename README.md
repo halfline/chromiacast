@@ -19,6 +19,8 @@ The library currently provides:
 - request-correlated authenticated `GET_DEVICE_INFO` and optional
   `eureka_info` product metadata, accepting both deployed `DEVICE_INFO`
   responses and receivers that echo `GET_DEVICE_INFO`;
+- a bounded HTTPS setup-endpoint query for deployed receiver manufacturer and
+  product metadata;
 - heartbeat replies and timeout detection;
 - OFFER/ANSWER negotiation for H.264, VP8, VP9, HEVC, AV1, Opus, and AAC
   configurations;
