@@ -120,7 +120,7 @@ cargo run --features discovery --example red_screen
 
 Press Ctrl-C to stop the mirroring application and close both sender sessions
 cleanly. The example is intentionally small, but it demonstrates key-frame
-requests, a media timeline, authenticated setup, and deliberate teardown.
+requests, a media timeline, session negotiation, and deliberate teardown.
 
 For packetization and load diagnostics with deliberately non-decodable data:
 
