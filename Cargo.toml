@@ -20,6 +20,7 @@ aes = "0.8"
 bytes = "1"
 ctr = "0.9"
 mdns-sd = { version = "0.20.3", optional = true }
+httparse = "1"
 rand = "0.8"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
