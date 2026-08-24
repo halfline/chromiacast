@@ -51,6 +51,14 @@ compiled when the explicitly named `dangerous-unverified` feature is enabled.
 They make no claim about the peer's identity and must not be used in production
 software.
 
+Authenticated product queries are available only on a verified
+`CastConnection`. The control task uses the protocol's distinct `requestId`
+and `request_id` spellings, requires the exact platform route and namespace,
+bounds every returned string, and distinguishes an unsupported or omitted
+`eureka_info` reply from a malformed successful reply. Applications remain
+responsible for matching the returned device ID to the device the user
+selected; the library does not treat presentation strings as authority.
+
 See [SECURITY.md](SECURITY.md) for the security model and reporting guidance.
 
 ## Encoded-frame contract
