@@ -1812,6 +1812,69 @@ mod tests {
         task.await.unwrap().unwrap();
     }
 
+    #[tokio::test]
+    async fn set_volume_uses_receiver_request_correlation() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (client_read, client_write) = io::split(client);
+        let (server_read, server_write) = io::split(server);
+        let (command_sender, command_receiver) = mpsc::channel(4);
+        let (event_sender, _) = broadcast::channel(4);
+        let task = tokio::spawn(control_loop(
+            FramedReader::new(client_read),
+            FramedWriter::new(client_write),
+            command_receiver,
+            event_sender,
+        ));
+        let mut reader = FramedReader::new(server_read);
+        let mut writer = FramedWriter::new(server_write);
+        let (response_sender, response_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::ReceiverRequest {
+                operation: ReceiverOperation::SetVolume,
+                payload: Some(serde_json::json!({
+                    "type": "SET_VOLUME",
+                    "volume": {"level": 0.75},
+                })),
+                response_sender,
+            })
+            .await
+            .unwrap();
+
+        let request = reader.read_message().await.unwrap();
+        assert_eq!(request.source_id, SENDER_ID);
+        assert_eq!(request.destination_id, RECEIVER_ID);
+        assert_eq!(request.namespace, NS_RECEIVER);
+        let Payload::String(request_payload) = request.payload else {
+            panic!("SET_VOLUME request was not JSON");
+        };
+        let request_payload: Value = serde_json::from_str(&request_payload).unwrap();
+        let request_id = json_u32(&request_payload, "requestId").unwrap();
+        assert_eq!(request_payload["type"], "SET_VOLUME");
+        assert_eq!(request_payload["volume"]["level"], 0.75);
+
+        write_json_message(
+            &mut writer,
+            RECEIVER_ID,
+            SENDER_ID,
+            NS_RECEIVER,
+            &status(Some(request_id), serde_json::json!([])),
+        )
+        .await
+        .unwrap();
+        let response = response_receiver.await.unwrap().unwrap();
+        assert_eq!(json_u32(&response, "requestId"), Some(request_id));
+
+        let (close_sender, close_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::Close {
+                response_sender: close_sender,
+            })
+            .await
+            .unwrap();
+        close_receiver.await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn closes_when_receiver_heartbeats_stop() {
         let (client, _server) = tokio::io::duplex(4096);
