@@ -26,6 +26,7 @@ use crate::tls::SelfSignedCertificateVerifier;
 
 use self::auth::AuthChallenge;
 pub use self::auth::DeviceIdentity;
+pub use self::device_info::AuthenticatedDeviceInfo;
 use self::framing::{FramedReader, FramedWriter};
 use self::proto::{CastMessage, Payload};
 
@@ -39,6 +40,7 @@ const NS_CONNECTION: &str = "urn:x-cast:com.google.cast.tp.connection";
 const NS_DEVICE_AUTH: &str = "urn:x-cast:com.google.cast.tp.deviceauth";
 const NS_HEARTBEAT: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
 const NS_RECEIVER: &str = "urn:x-cast:com.google.cast.receiver";
+const NS_RECEIVER_DISCOVERY: &str = "urn:x-cast:com.google.cast.receiver.discovery";
 const NS_WEBRTC: &str = "urn:x-cast:com.google.cast.webrtc";
 
 const SENDER_ID: &str = "sender-0";
@@ -177,6 +179,10 @@ enum ControlCommand {
         payload: Option<Value>,
         response_sender: JsonResponseSender,
     },
+    ProductInfoRequest {
+        operation: ProductInfoOperation,
+        response_sender: JsonResponseSender,
+    },
     SendOffer {
         destination: String,
         offer: Value,
@@ -200,6 +206,52 @@ struct PendingReceiverRequest {
 
 struct PendingOffer {
     destination: String,
+    response_sender: JsonResponseSender,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductInfoOperation {
+    DeviceInfo,
+}
+
+impl ProductInfoOperation {
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::DeviceInfo => NS_RECEIVER_DISCOVERY,
+        }
+    }
+
+    fn message_type(self) -> &'static str {
+        match self {
+            Self::DeviceInfo => "GET_DEVICE_INFO",
+        }
+    }
+
+    fn request_id_field(self) -> &'static str {
+        match self {
+            Self::DeviceInfo => "requestId",
+        }
+    }
+
+    fn accepts_response_type(self, message_type: &str) -> bool {
+        match self {
+            // Production Cast receivers use both response spellings. The
+            // authenticated channel, namespace, route, and request ID still
+            // provide the trust boundary and exact correlation.
+            Self::DeviceInfo => matches!(message_type, "DEVICE_INFO" | "GET_DEVICE_INFO"),
+        }
+    }
+
+    fn from_namespace(namespace: &str) -> Option<Self> {
+        match namespace {
+            NS_RECEIVER_DISCOVERY => Some(Self::DeviceInfo),
+            _ => None,
+        }
+    }
+}
+
+struct PendingProductInfoRequest {
+    operation: ProductInfoOperation,
     response_sender: JsonResponseSender,
 }
 
@@ -347,6 +399,16 @@ impl CastConnection {
     /// Subscribe to unsolicited receiver status and closure notifications.
     pub fn subscribe(&self) -> broadcast::Receiver<ControlEvent> {
         self.event_sender.subscribe()
+    }
+
+    /// Query identity and capability metadata asserted over this authenticated
+    /// Cast control channel.
+    pub async fn get_device_info(&self) -> Result<AuthenticatedDeviceInfo, Error> {
+        self.require_authenticated_product_info()?;
+        let value = self
+            .product_info_request(ProductInfoOperation::DeviceInfo)
+            .await?;
+        device_info::parse_device_info(&value)
     }
 
     /// Ask whether a receiver supports a Cast application ID.
@@ -522,6 +584,27 @@ impl CastConnection {
         await_json_response(response_receiver, description).await
     }
 
+    fn require_authenticated_product_info(&self) -> Result<(), Error> {
+        if self.device_identity.is_none() {
+            return Err(Error::AuthenticationFailed(
+                "product information requires an authenticated receiver".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn product_info_request(&self, operation: ProductInfoOperation) -> Result<Value, Error> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.command_sender
+            .send(ControlCommand::ProductInfoRequest {
+                operation,
+                response_sender,
+            })
+            .await
+            .map_err(|_| control_closed_error())?;
+        await_json_response(response_receiver, operation.message_type()).await
+    }
+
     async fn send_fire(
         &self,
         namespace: &str,
@@ -616,8 +699,10 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut next_request_id = 1u32;
+    let mut next_product_info_request_id = 1u32;
     let mut next_sequence_number = 1u32;
     let mut pending_receiver = HashMap::<u32, PendingReceiverRequest>::new();
+    let mut pending_product_info = HashMap::<u32, PendingProductInfoRequest>::new();
     let mut pending_offers = HashMap::<u32, PendingOffer>::new();
     let mut known_apps = HashMap::<String, CastApp>::new();
     let mut last_heartbeat = Instant::now();
@@ -626,6 +711,7 @@ where
 
     let (result, close_reason) = loop {
         pending_receiver.retain(|_, pending| !pending.response_sender.is_closed());
+        pending_product_info.retain(|_, pending| !pending.response_sender.is_closed());
         pending_offers.retain(|_, pending| !pending.response_sender.is_closed());
 
         tokio::select! {
@@ -696,13 +782,18 @@ where
                     continue;
                 }
 
-                if let Err(error) = dispatch_json_message(
-                    message,
-                    &mut pending_receiver,
-                    &mut pending_offers,
-                    &mut known_apps,
-                    &event_sender,
-                ) {
+                let dispatched = if ProductInfoOperation::from_namespace(&message.namespace).is_some() {
+                    dispatch_product_info_message(message, &mut pending_product_info)
+                } else {
+                    dispatch_json_message(
+                        message,
+                        &mut pending_receiver,
+                        &mut pending_offers,
+                        &mut known_apps,
+                        &event_sender,
+                    )
+                };
+                if let Err(error) = dispatched {
                     let detail = error.to_string();
                     break (Err(error), ControlCloseReason::Error(detail));
                 }
@@ -730,6 +821,33 @@ where
                             &payload,
                         ).await {
                             let detail = format!("send receiver request: {error}");
+                            break (Err(connection_error(&detail)), ControlCloseReason::Error(detail));
+                        }
+                    }
+                    Some(ControlCommand::ProductInfoRequest {
+                        operation,
+                        response_sender,
+                    }) => {
+                        let request_id = allocate_id(
+                            &mut next_product_info_request_id,
+                            &pending_product_info,
+                        );
+                        let mut payload = serde_json::json!({
+                            "type": operation.message_type(),
+                        });
+                        payload[operation.request_id_field()] = Value::from(request_id);
+                        pending_product_info.insert(request_id, PendingProductInfoRequest {
+                            operation,
+                            response_sender,
+                        });
+                        if let Err(error) = write_json_message_timed(
+                            &mut writer,
+                            SENDER_ID,
+                            RECEIVER_ID,
+                            operation.namespace(),
+                            &payload,
+                        ).await {
+                            let detail = format!("send product-info request: {error}");
                             break (Err(connection_error(&detail)), ControlCloseReason::Error(detail));
                         }
                     }
@@ -831,9 +949,61 @@ where
         Ok(()) => "control channel closed".to_owned(),
         Err(error) => error.to_string(),
     };
-    fail_all_pending(&mut pending_receiver, &mut pending_offers, &failure_detail);
+    fail_all_pending(
+        &mut pending_receiver,
+        &mut pending_product_info,
+        &mut pending_offers,
+        &failure_detail,
+    );
     let _ = event_sender.send(ControlEvent::Closed(close_reason));
     result
+}
+
+fn dispatch_product_info_message(
+    message: CastMessage,
+    pending: &mut HashMap<u32, PendingProductInfoRequest>,
+) -> Result<(), Error> {
+    let operation = ProductInfoOperation::from_namespace(&message.namespace)
+        .expect("caller classified the product-info namespace");
+    if message.source_id != RECEIVER_ID || message.destination_id != SENDER_ID {
+        return Ok(());
+    }
+    let Payload::String(payload) = &message.payload else {
+        return Err(Error::ProtocolError(format!(
+            "non-JSON response on {}",
+            message.namespace
+        )));
+    };
+    let value: Value = serde_json::from_str(payload).map_err(|error| {
+        Error::ProtocolError(format!(
+            "invalid JSON on namespace {}: {error}",
+            message.namespace
+        ))
+    })?;
+    let Some(request_id) = json_u32(&value, operation.request_id_field()) else {
+        return Ok(());
+    };
+    if !pending
+        .get(&request_id)
+        .is_some_and(|request| request.operation == operation)
+    {
+        return Ok(());
+    }
+
+    let message_type = json_message_type(&value).unwrap_or("");
+    let response = if operation.accepts_response_type(message_type) {
+        Ok(value)
+    } else {
+        Err(Error::ProtocolError(format!(
+            "correlated {} response has unexpected type {message_type:?}",
+            operation.message_type()
+        )))
+    };
+    let request = pending
+        .remove(&request_id)
+        .expect("product-info request disappeared after lookup");
+    let _ = request.response_sender.send(response);
+    Ok(())
 }
 
 fn dispatch_json_message(
@@ -1170,10 +1340,16 @@ fn fail_offers_for_destination(
 
 fn fail_all_pending(
     receiver_requests: &mut HashMap<u32, PendingReceiverRequest>,
+    product_info_requests: &mut HashMap<u32, PendingProductInfoRequest>,
     offers: &mut HashMap<u32, PendingOffer>,
     detail: &str,
 ) {
     for (_, request) in receiver_requests.drain() {
+        let _ = request
+            .response_sender
+            .send(Err(connection_error(detail.to_owned())));
+    }
+    for (_, request) in product_info_requests.drain() {
         let _ = request
             .response_sender
             .send(Err(connection_error(detail.to_owned())));
@@ -1660,6 +1836,81 @@ mod tests {
         assert_eq!(
             json_u32(&first_receiver.await.unwrap().unwrap(), "seqNum"),
             Some(first_sequence)
+        );
+
+        let (response_sender, response_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::Close { response_sender })
+            .await
+            .unwrap();
+        response_receiver.await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn device_info_requests_require_exact_correlation() {
+        let (client, server) = tokio::io::duplex(8192);
+        let (client_read, client_write) = io::split(client);
+        let (server_read, server_write) = io::split(server);
+        let (command_sender, command_receiver) = mpsc::channel(4);
+        let (event_sender, _) = broadcast::channel(4);
+        let task = tokio::spawn(control_loop(
+            FramedReader::new(client_read),
+            FramedWriter::new(client_write),
+            command_receiver,
+            event_sender,
+        ));
+        let mut reader = FramedReader::new(server_read);
+        let mut writer = FramedWriter::new(server_write);
+        let (device_sender, mut device_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::ProductInfoRequest {
+                operation: ProductInfoOperation::DeviceInfo,
+                response_sender: device_sender,
+            })
+            .await
+            .unwrap();
+
+        let request = reader.read_message().await.unwrap();
+        assert_eq!(request.namespace, NS_RECEIVER_DISCOVERY);
+        let Payload::String(payload) = request.payload else {
+            panic!("device-info request was not JSON");
+        };
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let request_id = json_u32(&payload, "requestId").unwrap();
+
+        write_json_message(
+            &mut writer,
+            RECEIVER_ID,
+            SENDER_ID,
+            NS_RECEIVER_DISCOVERY,
+            &serde_json::json!({
+                "type": "GET_DEVICE_INFO",
+                "requestId": request_id.wrapping_add(1),
+                "deviceId": "wrong",
+            }),
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(device_receiver.try_recv().is_err());
+
+        write_json_message(
+            &mut writer,
+            RECEIVER_ID,
+            SENDER_ID,
+            NS_RECEIVER_DISCOVERY,
+            &serde_json::json!({
+                "type": "DEVICE_INFO",
+                "requestId": request_id,
+                "deviceId": "00112233445566778899aabbccddeeff",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            json_u32(&device_receiver.await.unwrap().unwrap(), "requestId"),
+            Some(request_id)
         );
 
         let (response_sender, response_receiver) = oneshot::channel();
