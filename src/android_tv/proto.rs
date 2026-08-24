@@ -115,8 +115,72 @@ pub(crate) struct PairingSecretAck {
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct RemoteMessage {
+    #[prost(message, optional, tag = "1")]
+    pub configure: Option<RemoteConfigure>,
+    #[prost(message, optional, tag = "2")]
+    pub set_active: Option<RemoteSetActive>,
+    #[prost(message, optional, tag = "3")]
+    pub error: Option<RemoteError>,
+    #[prost(message, optional, tag = "8")]
+    pub ping_request: Option<RemotePingRequest>,
+    #[prost(message, optional, tag = "9")]
+    pub ping_response: Option<RemotePingResponse>,
     #[prost(message, optional, tag = "10")]
     pub key_inject: Option<RemoteKeyInject>,
+    #[prost(message, optional, tag = "40")]
+    pub start: Option<RemoteStart>,
+    #[prost(message, optional, tag = "50")]
+    pub volume: Option<RemoteVolume>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteConfigure {
+    #[prost(int32, tag = "1")]
+    pub features: i32,
+    #[prost(message, optional, tag = "2")]
+    pub device_info: Option<RemoteDeviceInfo>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteDeviceInfo {
+    #[prost(string, tag = "1")]
+    pub model: String,
+    #[prost(string, tag = "2")]
+    pub vendor: String,
+    #[prost(int32, tag = "3")]
+    pub unknown_one: i32,
+    #[prost(string, tag = "4")]
+    pub unknown_two: String,
+    #[prost(string, tag = "5")]
+    pub package_name: String,
+    #[prost(string, tag = "6")]
+    pub app_version: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteSetActive {
+    #[prost(int32, tag = "1")]
+    pub features: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteError {
+    #[prost(bool, tag = "1")]
+    pub value: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemotePingRequest {
+    #[prost(int32, tag = "1")]
+    pub value: i32,
+    #[prost(int32, tag = "2")]
+    pub auxiliary_value: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemotePingResponse {
+    #[prost(int32, tag = "1")]
+    pub value: i32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -125,6 +189,22 @@ pub(crate) struct RemoteKeyInject {
     pub key_code: i32,
     #[prost(int32, tag = "2")]
     pub direction: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteStart {
+    #[prost(bool, tag = "1")]
+    pub powered_on: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct RemoteVolume {
+    #[prost(uint32, tag = "6")]
+    pub maximum: u32,
+    #[prost(uint32, tag = "7")]
+    pub level: u32,
+    #[prost(bool, tag = "8")]
+    pub muted: bool,
 }
 
 #[cfg(test)]
