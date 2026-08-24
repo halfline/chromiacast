@@ -147,6 +147,7 @@ type JsonResponseSender = oneshot::Sender<Result<Value, Error>>;
 enum ReceiverOperation {
     Availability { app_id: String },
     Launch { app_id: String },
+    SetVolume,
     Status,
     Stop,
 }
@@ -168,7 +169,9 @@ impl ReceiverOperation {
                 "type": "GET_STATUS",
                 "requestId": request_id,
             }),
-            Self::Stop => unreachable!("STOP payload requires a session ID"),
+            Self::SetVolume | Self::Stop => {
+                unreachable!("receiver operation requires a custom payload")
+            }
         }
     }
 }
@@ -446,6 +449,37 @@ impl CastConnection {
     pub async fn status(&self) -> Result<ReceiverStatus, Error> {
         let value = self
             .receiver_request(ReceiverOperation::Status, None, "receiver status")
+            .await?;
+        parse_receiver_status(&value)
+    }
+
+    /// Set the receiver's platform volume level in the inclusive 0.0..=1.0
+    /// range and return the acknowledged receiver status.
+    pub async fn set_volume_level(&self, level: f64) -> Result<ReceiverStatus, Error> {
+        if !level.is_finite() || !(0.0..=1.0).contains(&level) {
+            return Err(Error::ProtocolError(
+                "receiver volume level must be finite and in 0.0..=1.0".into(),
+            ));
+        }
+        self.set_volume(serde_json::json!({"level": level})).await
+    }
+
+    /// Set the receiver's platform mute state and return the acknowledged
+    /// receiver status.
+    pub async fn set_muted(&self, muted: bool) -> Result<ReceiverStatus, Error> {
+        self.set_volume(serde_json::json!({"muted": muted})).await
+    }
+
+    async fn set_volume(&self, volume: Value) -> Result<ReceiverStatus, Error> {
+        let value = self
+            .receiver_request(
+                ReceiverOperation::SetVolume,
+                Some(serde_json::json!({
+                    "type": "SET_VOLUME",
+                    "volume": volume,
+                })),
+                "receiver volume update",
+            )
             .await?;
         parse_receiver_status(&value)
     }
@@ -1072,7 +1106,9 @@ fn complete_receiver_status(value: &Value, pending: &mut HashMap<u32, PendingRec
             .get(&request_id)
             .is_some_and(|request| match &request.operation {
                 ReceiverOperation::Launch { app_id } => receiver_status_contains_app(value, app_id),
-                ReceiverOperation::Status | ReceiverOperation::Stop => true,
+                ReceiverOperation::SetVolume
+                | ReceiverOperation::Status
+                | ReceiverOperation::Stop => true,
                 ReceiverOperation::Availability { .. } => false,
             });
         if complete {
@@ -1720,6 +1756,69 @@ mod tests {
             .await
             .unwrap();
         response_receiver.await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_volume_uses_receiver_request_correlation() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (client_read, client_write) = io::split(client);
+        let (server_read, server_write) = io::split(server);
+        let (command_sender, command_receiver) = mpsc::channel(4);
+        let (event_sender, _) = broadcast::channel(4);
+        let task = tokio::spawn(control_loop(
+            FramedReader::new(client_read),
+            FramedWriter::new(client_write),
+            command_receiver,
+            event_sender,
+        ));
+        let mut reader = FramedReader::new(server_read);
+        let mut writer = FramedWriter::new(server_write);
+        let (response_sender, response_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::ReceiverRequest {
+                operation: ReceiverOperation::SetVolume,
+                payload: Some(serde_json::json!({
+                    "type": "SET_VOLUME",
+                    "volume": {"level": 0.75},
+                })),
+                response_sender,
+            })
+            .await
+            .unwrap();
+
+        let request = reader.read_message().await.unwrap();
+        assert_eq!(request.source_id, SENDER_ID);
+        assert_eq!(request.destination_id, RECEIVER_ID);
+        assert_eq!(request.namespace, NS_RECEIVER);
+        let Payload::String(request_payload) = request.payload else {
+            panic!("SET_VOLUME request was not JSON");
+        };
+        let request_payload: Value = serde_json::from_str(&request_payload).unwrap();
+        let request_id = json_u32(&request_payload, "requestId").unwrap();
+        assert_eq!(request_payload["type"], "SET_VOLUME");
+        assert_eq!(request_payload["volume"]["level"], 0.75);
+
+        write_json_message(
+            &mut writer,
+            RECEIVER_ID,
+            SENDER_ID,
+            NS_RECEIVER,
+            &status(Some(request_id), serde_json::json!([])),
+        )
+        .await
+        .unwrap();
+        let response = response_receiver.await.unwrap().unwrap();
+        assert_eq!(json_u32(&response, "requestId"), Some(request_id));
+
+        let (close_sender, close_receiver) = oneshot::channel();
+        command_sender
+            .send(ControlCommand::Close {
+                response_sender: close_sender,
+            })
+            .await
+            .unwrap();
+        close_receiver.await.unwrap();
         task.await.unwrap().unwrap();
     }
 
