@@ -24,6 +24,9 @@ pub enum Error {
     #[error("protocol error: {0}")]
     ProtocolError(String),
 
+    #[error("setup endpoint query failed: {0}")]
+    SetupFailed(String),
+
     #[error("app launch failed: {0}")]
     AppLaunchFailed(String),
 
