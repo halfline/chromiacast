@@ -26,7 +26,7 @@ use crate::tls::SelfSignedCertificateVerifier;
 
 use self::auth::AuthChallenge;
 pub use self::auth::DeviceIdentity;
-pub use self::device_info::AuthenticatedDeviceInfo;
+pub use self::device_info::{AuthenticatedDeviceInfo, AuthenticatedEurekaInfo, EurekaInfoOutcome};
 use self::framing::{FramedReader, FramedWriter};
 use self::proto::{CastMessage, Payload};
 
@@ -41,6 +41,7 @@ const NS_DEVICE_AUTH: &str = "urn:x-cast:com.google.cast.tp.deviceauth";
 const NS_HEARTBEAT: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
 const NS_RECEIVER: &str = "urn:x-cast:com.google.cast.receiver";
 const NS_RECEIVER_DISCOVERY: &str = "urn:x-cast:com.google.cast.receiver.discovery";
+const NS_SETUP: &str = "urn:x-cast:com.google.cast.setup";
 const NS_WEBRTC: &str = "urn:x-cast:com.google.cast.webrtc";
 
 const SENDER_ID: &str = "sender-0";
@@ -147,6 +148,7 @@ type JsonResponseSender = oneshot::Sender<Result<Value, Error>>;
 enum ReceiverOperation {
     Availability { app_id: String },
     Launch { app_id: String },
+    SetVolume,
     Status,
     Stop,
 }
@@ -168,7 +170,9 @@ impl ReceiverOperation {
                 "type": "GET_STATUS",
                 "requestId": request_id,
             }),
-            Self::Stop => unreachable!("STOP payload requires a session ID"),
+            Self::SetVolume | Self::Stop => {
+                unreachable!("receiver operation requires a custom payload")
+            }
         }
     }
 }
@@ -212,24 +216,28 @@ struct PendingOffer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProductInfoOperation {
     DeviceInfo,
+    EurekaInfo,
 }
 
 impl ProductInfoOperation {
     fn namespace(self) -> &'static str {
         match self {
             Self::DeviceInfo => NS_RECEIVER_DISCOVERY,
+            Self::EurekaInfo => NS_SETUP,
         }
     }
 
     fn message_type(self) -> &'static str {
         match self {
             Self::DeviceInfo => "GET_DEVICE_INFO",
+            Self::EurekaInfo => "eureka_info",
         }
     }
 
     fn request_id_field(self) -> &'static str {
         match self {
             Self::DeviceInfo => "requestId",
+            Self::EurekaInfo => "request_id",
         }
     }
 
@@ -239,12 +247,14 @@ impl ProductInfoOperation {
             // authenticated channel, namespace, route, and request ID still
             // provide the trust boundary and exact correlation.
             Self::DeviceInfo => matches!(message_type, "DEVICE_INFO" | "GET_DEVICE_INFO"),
+            Self::EurekaInfo => message_type == "eureka_info",
         }
     }
 
     fn from_namespace(namespace: &str) -> Option<Self> {
         match namespace {
             NS_RECEIVER_DISCOVERY => Some(Self::DeviceInfo),
+            NS_SETUP => Some(Self::EurekaInfo),
             _ => None,
         }
     }
@@ -406,9 +416,28 @@ impl CastConnection {
     pub async fn get_device_info(&self) -> Result<AuthenticatedDeviceInfo, Error> {
         self.require_authenticated_product_info()?;
         let value = self
-            .product_info_request(ProductInfoOperation::DeviceInfo)
-            .await?;
+            .product_info_request(ProductInfoOperation::DeviceInfo, false)
+            .await?
+            .ok_or_else(|| Error::ProtocolError("GET_DEVICE_INFO returned no response".into()))?;
         device_info::parse_device_info(&value)
+    }
+
+    /// Query optional hardware product metadata over this authenticated Cast
+    /// control channel.
+    ///
+    /// Older receivers may reject or omit this operation. A correlated
+    /// rejection or a bounded response timeout returns
+    /// [`EurekaInfoOutcome::Unsupported`]; malformed successful replies remain
+    /// protocol errors.
+    pub async fn get_eureka_info(&self) -> Result<EurekaInfoOutcome, Error> {
+        self.require_authenticated_product_info()?;
+        let Some(value) = self
+            .product_info_request(ProductInfoOperation::EurekaInfo, true)
+            .await?
+        else {
+            return Ok(EurekaInfoOutcome::Unsupported);
+        };
+        device_info::parse_eureka_info(&value)
     }
 
     /// Ask whether a receiver supports a Cast application ID.
@@ -446,6 +475,37 @@ impl CastConnection {
     pub async fn status(&self) -> Result<ReceiverStatus, Error> {
         let value = self
             .receiver_request(ReceiverOperation::Status, None, "receiver status")
+            .await?;
+        parse_receiver_status(&value)
+    }
+
+    /// Set the receiver's platform volume level in the inclusive 0.0..=1.0
+    /// range and return the acknowledged receiver status.
+    pub async fn set_volume_level(&self, level: f64) -> Result<ReceiverStatus, Error> {
+        if !level.is_finite() || !(0.0..=1.0).contains(&level) {
+            return Err(Error::ProtocolError(
+                "receiver volume level must be finite and in 0.0..=1.0".into(),
+            ));
+        }
+        self.set_volume(serde_json::json!({"level": level})).await
+    }
+
+    /// Set the receiver's platform mute state and return the acknowledged
+    /// receiver status.
+    pub async fn set_muted(&self, muted: bool) -> Result<ReceiverStatus, Error> {
+        self.set_volume(serde_json::json!({"muted": muted})).await
+    }
+
+    async fn set_volume(&self, volume: Value) -> Result<ReceiverStatus, Error> {
+        let value = self
+            .receiver_request(
+                ReceiverOperation::SetVolume,
+                Some(serde_json::json!({
+                    "type": "SET_VOLUME",
+                    "volume": volume,
+                })),
+                "receiver volume update",
+            )
             .await?;
         parse_receiver_status(&value)
     }
@@ -593,7 +653,11 @@ impl CastConnection {
         Ok(())
     }
 
-    async fn product_info_request(&self, operation: ProductInfoOperation) -> Result<Value, Error> {
+    async fn product_info_request(
+        &self,
+        operation: ProductInfoOperation,
+        timeout_is_unsupported: bool,
+    ) -> Result<Option<Value>, Error> {
         let (response_sender, response_receiver) = oneshot::channel();
         self.command_sender
             .send(ControlCommand::ProductInfoRequest {
@@ -602,7 +666,15 @@ impl CastConnection {
             })
             .await
             .map_err(|_| control_closed_error())?;
-        await_json_response(response_receiver, operation.message_type()).await
+        match timeout(REQUEST_TIMEOUT, response_receiver).await {
+            Ok(Ok(result)) => result.map(Some),
+            Ok(Err(_)) => Err(control_closed_error()),
+            Err(_) if timeout_is_unsupported => Ok(None),
+            Err(_) => Err(Error::ProtocolError(format!(
+                "{} timed out",
+                operation.message_type()
+            ))),
+        }
     }
 
     async fn send_fire(
@@ -991,14 +1063,15 @@ fn dispatch_product_info_message(
     }
 
     let message_type = json_message_type(&value).unwrap_or("");
-    let response = if operation.accepts_response_type(message_type) {
-        Ok(value)
-    } else {
-        Err(Error::ProtocolError(format!(
-            "correlated {} response has unexpected type {message_type:?}",
-            operation.message_type()
-        )))
-    };
+    let response =
+        if operation.accepts_response_type(message_type) || message_type == "INVALID_REQUEST" {
+            Ok(value)
+        } else {
+            Err(Error::ProtocolError(format!(
+                "correlated {} response has unexpected type {message_type:?}",
+                operation.message_type()
+            )))
+        };
     let request = pending
         .remove(&request_id)
         .expect("product-info request disappeared after lookup");
@@ -1072,7 +1145,9 @@ fn complete_receiver_status(value: &Value, pending: &mut HashMap<u32, PendingRec
             .get(&request_id)
             .is_some_and(|request| match &request.operation {
                 ReceiverOperation::Launch { app_id } => receiver_status_contains_app(value, app_id),
-                ReceiverOperation::Status | ReceiverOperation::Stop => true,
+                ReceiverOperation::SetVolume
+                | ReceiverOperation::Status
+                | ReceiverOperation::Stop => true,
                 ReceiverOperation::Availability { .. } => false,
             });
         if complete {
@@ -1422,7 +1497,8 @@ where
             .get("type")
             .and_then(|value| value.as_str())
             .unwrap_or("unknown"),
-        request_id = json_u32(payload, "requestId"),
+        request_id = json_u32(payload, "requestId")
+            .or_else(|| json_u32(payload, "request_id")),
         sequence_number = json_u32(payload, "seqNum"),
         "Cast control message",
     );
@@ -1848,7 +1924,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_info_requests_require_exact_correlation() {
+    async fn product_info_requests_use_namespace_specific_correlations() {
         let (client, server) = tokio::io::duplex(8192);
         let (client_read, client_write) = io::split(client);
         let (server_read, server_write) = io::split(server);
@@ -1863,6 +1939,7 @@ mod tests {
         let mut reader = FramedReader::new(server_read);
         let mut writer = FramedWriter::new(server_write);
         let (device_sender, mut device_receiver) = oneshot::channel();
+        let (eureka_sender, mut eureka_receiver) = oneshot::channel();
         command_sender
             .send(ControlCommand::ProductInfoRequest {
                 operation: ProductInfoOperation::DeviceInfo,
@@ -1870,14 +1947,37 @@ mod tests {
             })
             .await
             .unwrap();
+        command_sender
+            .send(ControlCommand::ProductInfoRequest {
+                operation: ProductInfoOperation::EurekaInfo,
+                response_sender: eureka_sender,
+            })
+            .await
+            .unwrap();
 
-        let request = reader.read_message().await.unwrap();
-        assert_eq!(request.namespace, NS_RECEIVER_DISCOVERY);
-        let Payload::String(payload) = request.payload else {
+        let first = reader.read_message().await.unwrap();
+        let second = reader.read_message().await.unwrap();
+        let messages = [first, second];
+        let device_request = messages
+            .iter()
+            .find(|message| message.namespace == NS_RECEIVER_DISCOVERY)
+            .unwrap();
+        let eureka_request = messages
+            .iter()
+            .find(|message| message.namespace == NS_SETUP)
+            .unwrap();
+        let Payload::String(device_payload) = &device_request.payload else {
             panic!("device-info request was not JSON");
         };
-        let payload: Value = serde_json::from_str(&payload).unwrap();
-        let request_id = json_u32(&payload, "requestId").unwrap();
+        let Payload::String(eureka_payload) = &eureka_request.payload else {
+            panic!("eureka-info request was not JSON");
+        };
+        let device_payload: Value = serde_json::from_str(device_payload).unwrap();
+        let eureka_payload: Value = serde_json::from_str(eureka_payload).unwrap();
+        let device_id = json_u32(&device_payload, "requestId").unwrap();
+        let eureka_id = json_u32(&eureka_payload, "request_id").unwrap();
+        assert!(device_payload.get("request_id").is_none());
+        assert!(eureka_payload.get("requestId").is_none());
 
         write_json_message(
             &mut writer,
@@ -1886,13 +1986,44 @@ mod tests {
             NS_RECEIVER_DISCOVERY,
             &serde_json::json!({
                 "type": "GET_DEVICE_INFO",
-                "requestId": request_id.wrapping_add(1),
+                "requestId": device_id.wrapping_add(1),
                 "deviceId": "wrong",
             }),
         )
         .await
         .unwrap();
+        write_json_message(
+            &mut writer,
+            "wrong-receiver",
+            SENDER_ID,
+            NS_SETUP,
+            &serde_json::json!({
+                "type": "eureka_info",
+                "request_id": eureka_id,
+                "response_code": 200,
+            }),
+        )
+        .await
+        .unwrap();
         tokio::task::yield_now().await;
+        assert!(eureka_receiver.try_recv().is_err());
+        write_json_message(
+            &mut writer,
+            RECEIVER_ID,
+            SENDER_ID,
+            NS_SETUP,
+            &serde_json::json!({
+                "type": "eureka_info",
+                "request_id": eureka_id,
+                "response_code": 200,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            json_u32(&eureka_receiver.await.unwrap().unwrap(), "request_id"),
+            Some(eureka_id)
+        );
         assert!(device_receiver.try_recv().is_err());
 
         write_json_message(
@@ -1902,7 +2033,7 @@ mod tests {
             NS_RECEIVER_DISCOVERY,
             &serde_json::json!({
                 "type": "DEVICE_INFO",
-                "requestId": request_id,
+                "requestId": device_id,
                 "deviceId": "00112233445566778899aabbccddeeff",
             }),
         )
@@ -1910,7 +2041,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             json_u32(&device_receiver.await.unwrap().unwrap(), "requestId"),
-            Some(request_id)
+            Some(device_id)
         );
 
         let (response_sender, response_receiver) = oneshot::channel();
