@@ -26,6 +26,29 @@ selected receiver address and returns bounded presentation metadata. Callers
 must not treat those manufacturer, model, product, or SSDP strings as a
 credential or authorization decision.
 
+## Android TV pairing credentials
+
+The optional `android-tv` feature generates an RSA client key and certificate.
+The television authorizes that certificate during the six-hex-digit Polo
+pairing exchange, so callers must reuse the same `AndroidTvRemoteIdentity` for
+subsequent Remote Service connections. The library returns DER bytes for
+caller-managed persistence and never writes them itself. Store the unencrypted
+PKCS#8 key in a desktop credential service, never in discovery metadata,
+ordinary configuration, logs, crash diagnostics, or command-line arguments.
+
+The pairing secret binds the live client and device certificates to the code
+displayed by the television. Remote Service uses a self-signed device
+certificate, and the current post-pairing connection checks TLS signatures but
+does not retain or pin that certificate. Consequently, endpoint selection is a
+local-network trust decision and Remote Service metadata is presentation data,
+not authenticated Cast identity. Applications that need a stronger boundary
+should retain a device certificate or fingerprint from pairing and add pinning
+before exposing control on a hostile network.
+
+Android key injection has no semantic acknowledgement. A successful
+`send_key` or `press_key` result means only that the complete bounded protocol
+frame was flushed to the live TLS session.
+
 ## Supported versions
 
 Security fixes are applied to the current development branch. No stable
