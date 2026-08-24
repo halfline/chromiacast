@@ -28,6 +28,8 @@ The library currently provides:
 - RTCP Sender Reports, receiver reports, ACKs, NACKs, retransmission, and
   picture-loss handling;
 - simultaneous audio and video sender streams;
+- optional Android TV Remote Service v2 pairing and control, kept independent
+  from the Cast transport and exposed through the `android-tv` feature;
 - observable sender failures, receiver timeouts, and flow-control statistics;
 - a pluggable datagram `Transport`; and
 - optional mDNS discovery that retains stable device IDs and every advertised
@@ -69,6 +71,16 @@ uses the deployed literal `device_info,name` request, sends the selected IP in
 the HTTP `Host` header, does not follow redirects, and stops at the declared
 body boundary without waiting for the receiver to close its persistent TLS
 connection.
+
+Android TV Remote Service is a separate protocol even when the same television
+also implements Google Cast. `AndroidTvRemoteIdentity` contains the persistent
+client certificate and private key authorized by the PIN pairing exchange. The
+library never persists that identity; applications must place it in an
+appropriate credential service and reuse it for later connections. Remote
+Service devices also use self-signed TLS certificates. The pairing secret binds
+both certificates to the code displayed by the television, but the current
+control connection does not pin the device certificate after pairing. Treat the
+selected network endpoint and all device metadata as untrusted input.
 
 See [SECURITY.md](SECURITY.md) for the security model and reporting guidance.
 
@@ -131,6 +143,35 @@ cargo run --example packet_transport_stress -- RECEIVER_ADDRESS
 An IP address uses port 8009. For an IPv6 link-local receiver, pass a scoped
 socket address such as `[fe80::1234%3]:8009`.
 
+Applications which combine Cast streaming with Android TV control should keep
+the two connection lifecycles as peers. A Cast connection can continue to own
+mirroring and receiver volume while an optional `AndroidTvRemote` supplies
+power and Android key injection. Pairing is a consuming two-stage operation:
+retain the returned `AndroidTvPairingSession` while the TV shows its
+six-hex-digit code, then call `finish` once. Key methods return after a complete
+Remote v2 frame has been flushed; the protocol provides no semantic
+acknowledgement that the television acted on the key.
+
+For a one-shot interoperability check which generates an ephemeral identity,
+pairs, and sends one action:
+
+```sh
+cargo run --features android-tv --example android_tv_control -- TV_ADDRESS
+```
+
+The diagnostic keeps one connection open for interactive actions but
+intentionally does not persist its private key, so it must pair again on every
+run. An action may be supplied after the address for a one-shot invocation.
+Production applications should use the API directly and store the identity in
+their credential service.
+
+Chromiacast does not present input-source selection as a Remote Service
+capability. Although Android assigns key codes to an input picker and direct
+inputs, a live Google TV ignored those injected codes and the Google remote UI
+on the tested setup does not expose them. `AndroidTvKeyCode::from_raw` remains
+available for deliberate protocol experiments without promoting an unproven
+operation into the typed convenience API.
+
 ## Testing
 
 Run the in-process protocol and mock-transport coverage with:
@@ -171,6 +212,13 @@ The implementation is original Rust code informed by the published
 and [sender authentication reference](https://chromium.googlesource.com/openscreen/+/refs/heads/main/cast/sender/channel/cast_auth_util.cc).
 It does not embed Open Screen's GN/C++ runtime. The bundled Cast trust anchors
 were sourced from Open Screen; their attribution and license are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The optional Android TV implementation is original Rust code informed by
+AOSP's published Google TV Pairing Protocol and multiple interoperable Remote
+Service v2 clients. It models only the protobuf fields it uses rather than
+embedding another project's generated protocol sources. Exact references,
+revisions, and licenses are recorded in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
