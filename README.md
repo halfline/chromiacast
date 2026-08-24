@@ -61,6 +61,15 @@ bounds every returned string, and distinguishes an unsupported or omitted
 responsible for matching the returned device ID to the device the user
 selected; the library does not treat presentation strings as authority.
 
+`CastConnection::get_setup_device_info` queries the selected receiver's local
+HTTPS setup service directly. That service uses a self-signed certificate, so
+its bounded manufacturer, model, product, and SSDP strings are peer-supplied
+presentation metadata rather than Cast-authenticated identity. The client
+uses the deployed literal `device_info,name` request, sends the selected IP in
+the HTTP `Host` header, does not follow redirects, and stops at the declared
+body boundary without waiting for the receiver to close its persistent TLS
+connection.
+
 See [SECURITY.md](SECURITY.md) for the security model and reporting guidance.
 
 ## Encoded-frame contract
