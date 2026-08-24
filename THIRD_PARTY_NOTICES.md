@@ -40,3 +40,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 Source: <https://chromium.googlesource.com/openscreen/>
+
+## Android TV protocol references
+
+The optional Android TV implementation is original Rust code informed by the
+following protocol sources. Chromiacast does not embed their generated code,
+runtime, or assets; it defines the minimal protobuf-compatible field surface it
+uses.
+
+- Google's AOSP Google TV Pairing Protocol, revision
+  `c731915e80d9e2ccb755b97e7fdd280bbea07f70`, supplied the Polo message schema,
+  pairing state machine, and certificate-derived challenge/response algorithm.
+  It is licensed under Apache-2.0.
+  Source: <https://android.googlesource.com/platform/external/google-tv-pairing-protocol>
+- `tronikos/androidtvremote2`, revision
+  `e67a1e10335ac0a7e502341f96a82580eed191ab`, supplied an interoperable Remote
+  Service v2 protobuf description and behavior reference. It is licensed under
+  Apache-2.0. Source: <https://github.com/tronikos/androidtvremote2>
+- `JaneAdora/clicker`, revision
+  `aaeeebfe331d4bc5baf1018e4fce07c131352b4e`, and `drosoCode/atvremote`,
+  revision `967d9ff8e74cae4b5cb149696f7a05ceb0a128c4`, were independent
+  interoperability cross-checks for the Remote v2 handshake, feature mask,
+  framing, and key injection. Clicker is licensed under MIT OR Apache-2.0;
+  atvremote is licensed under MIT.
+  Sources: <https://github.com/JaneAdora/clicker> and
+  <https://github.com/drosoCode/atvremote>
