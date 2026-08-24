@@ -16,6 +16,9 @@ The library currently provides:
 - Cast V2 framing over TLS and Cast device authentication;
 - receiver status, app availability, launch, stop, and unsolicited lifecycle
   events;
+- request-correlated authenticated `GET_DEVICE_INFO` and optional
+  `eureka_info` product metadata, accepting both deployed `DEVICE_INFO`
+  responses and receivers that echo `GET_DEVICE_INFO`;
 - heartbeat replies and timeout detection;
 - OFFER/ANSWER negotiation for H.264, VP8, VP9, HEVC, AV1, Opus, and AAC
   configurations;
