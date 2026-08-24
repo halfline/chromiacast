@@ -5,6 +5,8 @@
 //! encoder. Packet layouts and cryptographic machinery remain private so the
 //! integration API can evolve independently of protocol internals.
 
+#[cfg(feature = "android-tv")]
+pub mod android_tv;
 mod answer;
 mod codec;
 mod constants;

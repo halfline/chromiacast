@@ -12,6 +12,7 @@ categories = ["multimedia", "network-programming"]
 
 [features]
 default = []
+android-tv = ["dep:prost"]
 dangerous-unverified = []
 discovery = ["dep:mdns-sd"]
 
@@ -21,6 +22,7 @@ bytes = "1"
 ctr = "0.9"
 mdns-sd = { version = "0.20.3", optional = true }
 httparse = "1"
+prost = { version = "0.13", optional = true }
 rand = "0.8"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
