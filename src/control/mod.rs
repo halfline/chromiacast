@@ -440,6 +440,19 @@ impl CastConnection {
         device_info::parse_eureka_info(&value)
     }
 
+    /// Query hardware presentation metadata from the selected receiver's
+    /// local HTTPS setup endpoint.
+    ///
+    /// The request is routed directly to the IP address used by this control
+    /// connection and is bounded by a short timeout and response-size limit.
+    /// Unlike [`get_device_info`](Self::get_device_info), the returned strings
+    /// are not covered by Cast device authentication. Callers should correlate
+    /// the returned SSDP UDN with the authenticated device ID when available.
+    pub async fn get_setup_device_info(&self) -> Result<crate::SetupInfoOutcome, Error> {
+        self.require_authenticated_product_info()?;
+        crate::setup::query_device_info(self.remote_address).await
+    }
+
     /// Ask whether a receiver supports a Cast application ID.
     pub async fn get_app_availability(&self, app_id: &str) -> Result<AppAvailability, Error> {
         let value = self
