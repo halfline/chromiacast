@@ -5,6 +5,8 @@
 
 mod error;
 mod framing;
+mod identity;
 mod proto;
 
 pub use error::AndroidTvError;
+pub use identity::AndroidTvRemoteIdentity;
