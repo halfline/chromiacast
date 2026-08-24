@@ -20,6 +20,7 @@ mod rtcp;
 mod rtp;
 mod sender;
 mod sync_source;
+mod tls;
 mod transport;
 
 pub use answer::{Answer, AudioConstraints, Constraints, DisplayDescription, VideoConstraints};
